@@ -1,7 +1,7 @@
 streamlit
-pandas
-numpy
-plotly
-ta
-ccxt
-requests
+npandas
+nnumpy
+nplotly
+nta
+nccxt
+nrequests
