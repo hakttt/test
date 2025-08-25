@@ -534,5 +534,3 @@ if run_btn:
     with st.expander("TSI (Günlük & Haftalık) – Son Değerler"):
         st.write("Günlük TSI son değer:", None if tsi_D.empty else float(tsi_D["TSI"].dropna().iloc[-1]))
         st.write("Haftalık TSI son değer:", None if tsi_W.empty else float(tsi_W["TSI"].dropna().iloc[-1]))
-```0
-
