@@ -1,13 +1,5 @@
 # eth_scalper.py
 # Çalıştır:  streamlit run eth_scalper.py
-# Gerekli paketler (requirements.txt):
-#   streamlit
-#   pandas
-#   numpy
-#   plotly
-#   ta
-#   ccxt
-#   requests
 
 import streamlit as st
 import pandas as pd
@@ -341,7 +333,7 @@ with st.sidebar:
     st.header("Ayarlar")
     data_source = st.selectbox(
         "Veri kaynağı",
-        ["API (ccxt)", "CSV yükle", "Binance Arşiv (otomatik)"] ,
+        ["API (ccxt)", "CSV yükle", "Binance Arşiv (otomatik)"],
         index=2
     )
     exchange_name = st.selectbox(
@@ -416,7 +408,7 @@ def read_and_prepare_csv(file, start_date, end_date):
         ren[df.columns[lower_cols.index(name)]] = name
     df = df.rename(columns=ren)
     df.index = idx
-    df = df[["open","high","low","close","volume"]].dropna()
+    df = df["open high low close volume".split()].dropna()
 
     # Eğer 1m ise 5m'ye resample
     if len(df) > 2:
@@ -613,8 +605,9 @@ if run_btn:
             tsiW = tsi_W["TSI"].reindex(df_5m.index, method="ffill")
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiD, name="TSI Daily", mode="lines"), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiW, name="TSI Weekly", mode="lines"), row=2, col=1)
-            # 0 hattı (scatter ile)
-            fig.add_trace(go.Scatter(x=df_5m.index, y=[0]*len(df_5m), name="TSI 0", mode="lines", line=dict(dash="dot", width=1)), row=2, col=1)
+            # 0 hattını çiz
+            fig.add_trace(go.Scatter(x=df_5m.index, y=[0]*len(df_5m), name="TSI 0", mode="lines",
+                                     line=dict(dash="dot", width=1)), row=2, col=1)
 
         fig.update_layout(height=750, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
