@@ -1,6 +1,6 @@
 # eth_scalper.py
 # Çalıştır:  streamlit run eth_scalper.py
-# Gerekli paketler (ilk kurulumda):
+# Gerekli paketler:
 #   pip install streamlit ccxt plotly ta pandas numpy
 
 import streamlit as st
@@ -15,14 +15,14 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="ETH 5m Scalper Backtest", layout="wide")
 
 # =========================
-# Helpers
+# Yardımcı Fonksiyonlar
 # =========================
 
 def ema(series: pd.Series, length: int):
     return series.ewm(span=length, adjust=False).mean()
 
 def tsi(close: pd.Series, r: int = 25, s: int = 13):
-    """True Strength Index (basit sürüm)"""
+    """True Strength Index (basit)"""
     m = close.diff()
     ema1 = m.ewm(span=r, adjust=False).mean()
     ema2 = ema1.ewm(span=s, adjust=False).mean()
@@ -73,7 +73,7 @@ def compute_indicators(df: pd.DataFrame, ema_fast=7, ema_mid=13, ema_slow=26, at
     return df
 
 # =========================
-# Backtest Engine
+# Backtest Motoru
 # =========================
 
 def backtest(
@@ -102,7 +102,6 @@ def backtest(
     week = tsi_week.copy()
     df = df.join(day.add_suffix("_D"), how="left")
     df = df.join(week.add_suffix("_W"), how="left")
-    # boşları doldur
     if "tsi_color_D" in df.columns: df["tsi_color_D"] = df["tsi_color_D"].ffill()
     if "tsi_color_W" in df.columns: df["tsi_color_W"] = df["tsi_color_W"].ffill()
 
@@ -322,14 +321,12 @@ with st.sidebar:
     run_btn = st.button("Backtest Çalıştır")
 
 # =========================
-# Data load
+# CSV Okuyucu
 # =========================
 
 def read_and_prepare_csv(file, start_date, end_date):
     df = pd.read_csv(file)
-    # Sütun isimlerini normalize et
     lower_cols = [c.lower() for c in df.columns]
-    # open-high-low-close-volume kontrol
     required = ["open","high","low","close","volume"]
     for req in required:
         if req not in lower_cols:
@@ -338,7 +335,6 @@ def read_and_prepare_csv(file, start_date, end_date):
     if "timestamp" in lower_cols:
         ts_col = df.columns[lower_cols.index("timestamp")]
         ts_vals = pd.to_numeric(df[ts_col], errors="coerce")
-        # saniye mi ms mi?
         if ts_vals.max() > 1e12:
             idx = pd.to_datetime(ts_vals, unit="ms", utc=True)
         else:
@@ -349,7 +345,6 @@ def read_and_prepare_csv(file, start_date, end_date):
     else:
         raise ValueError("CSV'de 'timestamp' veya 'date' sütunu bulunamadı.")
 
-    # İsimleri standardize et
     ren = {}
     for name in ["open","high","low","close","volume"]:
         ren[df.columns[lower_cols.index(name)]] = name
@@ -368,6 +363,10 @@ def read_and_prepare_csv(file, start_date, end_date):
     if df.empty:
         raise ValueError("Seçilen tarih aralığında veri bulunamadı.")
     return df
+
+# =========================
+# Veri Yükleme + Backtest + Görselleştirme
+# =========================
 
 if run_btn:
     if data_source == "CSV yükle":
@@ -396,7 +395,6 @@ if run_btn:
             if df_chunk.index[-1].date() >= end_date:
                 break
             fetch_since = last_ts + 5 * 60 * 1000
-            # uzun geçmiş için sınır (isteğe göre artırılabilir)
             if len(df_5m_list) > 200:  # ~3 yıl civarı
                 break
         if not df_5m_list:
@@ -426,24 +424,25 @@ if run_btn:
         leverage=leverage, fee_perc=fee_perc
     )
 
-    # =========================
     # Görselleştirme
-    # =========================
     col1, col2 = st.columns([3, 2])
 
     with col1:
         if plot_tsi:
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                                 row_heights=[0.72, 0.28], vertical_spacing=0.05,
-                                subplot_titles=("Fiyat (5m)","TSI (Günlük & Haftalık)"))
+                                subplot_titles=("Fiyat (5m)", "TSI (Günlük & Haftalık)"))
         else:
             fig = make_subplots(rows=1, cols=1)
 
         # Fiyat + EMA
-        fig.add_trace(go.Candlestick(
-            x=df_5m.index, open=df_5m["open"], high=df_5m["high"],
-            low=df_5m["low"], close=df_5m["close"], name="ETH 5m"
-        ), row=1, col=1)
+        fig.add_trace(
+            go.Candlestick(
+                x=df_5m.index, open=df_5m["open"], high=df_5m["high"],
+                low=df_5m["low"], close=df_5m["close"], name="ETH 5m"
+            ),
+            row=1, col=1
+        )
         fig.add_trace(go.Scatter(x=df_5m.index, y=df_5m[f"ema_{ema_fast}"], name=f"EMA {ema_fast}", mode="lines"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_5m.index, y=df_5m[f"ema_{ema_mid}"],  name=f"EMA {ema_mid}",  mode="lines"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_5m.index, y=df_5m[f"ema_{ema_slow}"], name=f"EMA {ema_slow}", mode="lines"), row=1, col=1)
@@ -452,14 +451,39 @@ if run_btn:
         if not trades.empty:
             longs  = trades[trades["side"]=="long"]
             shorts = trades[trades["side"]=="short"]
-            fig.add_trace(go.Scatter(x=longs["entry_time"], y=longs["entry"], mode="markers",
-                                     name="Long Entry", marker=dict(symbol="triangle-up", size=9))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=longs["exit_time"], y=longs["exit"], mode="markers",
-                                     name="Long Exit", marker=dict(symbol="x", size=8))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=shorts["entry_time"], y=shorts["entry"], mode="markers",
-                                     name="Short Entry", marker=dict(symbol="triangle-down", size=9))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=shorts["exit_time"], y=shorts["exit"], mode="markers",
-                                     name="Short Exit", marker=dict(symbol="x", size=8))), row=1, col=1)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=longs["entry_time"], y=longs["entry"],
+                    mode="markers", name="Long Entry",
+                    marker=dict(symbol="triangle-up", size=9)
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=longs["exit_time"], y=longs["exit"],
+                    mode="markers", name="Long Exit",
+                    marker=dict(symbol="x", size=8)
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=shorts["entry_time"], y=shorts["entry"],
+                    mode="markers", name="Short Entry",
+                    marker=dict(symbol="triangle-down", size=9)
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=shorts["exit_time"], y=shorts["exit"],
+                    mode="markers", name="Short Exit",
+                    marker=dict(symbol="x", size=8)
+                ),
+                row=1, col=1
+            )
 
         # TSI alt panel
         if plot_tsi:
@@ -468,6 +492,7 @@ if run_btn:
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiD, name="TSI Daily", mode="lines"), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiW, name="TSI Weekly", mode="lines"), row=2, col=1)
             # 0 hattı
+            fig.update_yaxes(title_text="", row=2, col=1)
             fig.add_hline(y=0, line=dict(width=1, dash="dot"), row=2, col=1)
 
         fig.update_layout(height=750, xaxis_rangeslider_visible=False)
@@ -483,7 +508,6 @@ if run_btn:
             losses = (trades["pnl"] <= 0).sum()
             winrate = 100 * wins / len(trades)
             ending_cap = eq["equity"].iloc[-1] if not eq.empty else initial_capital
-            ret_pct = 100 * (ending_cap / initial_capital - 1)
 
             max_dd = None
             if not eq.empty:
@@ -510,3 +534,5 @@ if run_btn:
     with st.expander("TSI (Günlük & Haftalık) – Son Değerler"):
         st.write("Günlük TSI son değer:", None if tsi_D.empty else float(tsi_D["TSI"].dropna().iloc[-1]))
         st.write("Haftalık TSI son değer:", None if tsi_W.empty else float(tsi_W["TSI"].dropna().iloc[-1]))
+```0
+
