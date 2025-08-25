@@ -9,7 +9,6 @@ import time
 import io
 import zipfile
 import requests
-import ccxt
 from ta.volatility import AverageTrueRange
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -439,6 +438,21 @@ if run_btn:
             st.stop()
 
     elif data_source == "API (ccxt)":
+            try:
+        import ccxt  # gecikmeli import: sadece API seçilince
+    except Exception as e:
+        import sys, pkgutil
+        py = sys.version.replace("\n"," ")
+        has_ccxt = pkgutil.find_loader("ccxt") is not None
+        st.error(
+            "ccxt import edilemedi.\n\n"
+            f"Python: {py}\n"
+            f"ccxt bulundu mu? {has_ccxt}\n"
+            "Muhtemel neden: runtime.txt uygulanmadı veya ccxt kurulmadı.\n"
+            "Lütfen logta 'Using Python 3.11' satırını ve 'Successfully installed ccxt' satırını doğrulayın."
+        )
+        st.stop()
+
         st.info("Veri indiriliyor… (ccxt)")
         ex = getattr(ccxt, exchange_name)({"enableRateLimit": True, "timeout": 30000})
         if exchange_name == "binanceusdm":
