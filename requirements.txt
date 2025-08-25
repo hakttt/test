@@ -1,7 +1,7 @@
-streamlit
-npandas
-nnumpy
-nplotly
-nta
-nccxt
-nrequests
+streamlit==1.36.0
+pandas==2.2.2
+numpy==1.26.4
+plotly==5.22.0
+ta==0.11.0
+ccxt==4.3.86
+requests==2.32.3
