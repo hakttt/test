@@ -1,12 +1,22 @@
 # eth_scalper.py
 # Çalıştır:  streamlit run eth_scalper.py
-# Gerekli paketler:
-#   pip install streamlit ccxt plotly ta pandas numpy
+# Gerekli paketler (requirements.txt):
+#   streamlit
+#   pandas
+#   numpy
+#   plotly
+#   ta
+#   ccxt
+#   requests
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime as dt
+import time
+import io
+import zipfile
+import requests
 import ccxt
 from ta.volatility import AverageTrueRange
 import plotly.graph_objects as go
@@ -42,7 +52,7 @@ def bearish_engulf(prev_open, prev_close, curr_open, curr_close) -> bool:
     return (prev_close > prev_open) and (curr_close < curr_open) and \
            (curr_open >= prev_close) and (curr_close <= prev_open)
 
-def fetch_ohlcv(exchange, symbol: str, timeframe: str, since_ms=None, limit=1500):
+def fetch_ohlcv(exchange, symbol: str, timeframe: str, since_ms=None, limit=1000):
     data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=limit)
     if not data:
         return pd.DataFrame(columns=["timestamp","open","high","low","close","volume"]).set_index("timestamp")
@@ -71,6 +81,53 @@ def compute_indicators(df: pd.DataFrame, ema_fast=7, ema_mid=13, ema_slow=26, at
     df["atr"] = atr.average_true_range()
     df["vol_ma"] = df["volume"].rolling(20).mean()
     return df
+
+# =========================
+# Binance Arşiv Yardımcıları (USDT-M Futures, ETHUSDT, 5m)
+# =========================
+
+BINANCE_BASE = "https://data.binance.vision"
+
+def list_last_n_months(n=12):
+    today = pd.Timestamp.utcnow().normalize().to_pydatetime().date().replace(day=1)
+    months = []
+    for i in range(n):
+        d = (pd.Timestamp(today) - pd.DateOffset(months=i)).to_pydatetime().date()
+        months.append((d.year, d.month))
+    months.sort()  # eskiden yeniye
+    return months
+
+def monthly_url_futures_eth_5m(year, month):
+    # USDT-M futures, ETHUSDT, 5m, monthly zip
+    return f"{BINANCE_BASE}/data/futures/um/monthly/klines/ETHUSDT/5m/ETHUSDT-5m-{year:04d}-{month:02d}.zip"
+
+def fetch_zip(url, timeout=30, retries=3, backoff=1.5):
+    for i in range(retries):
+        try:
+            r = requests.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.content
+            elif r.status_code == 404:
+                return None
+        except Exception:
+            pass
+        if i < retries - 1:
+            time.sleep(backoff * (i+1))
+    return None
+
+def parse_month_zip(zbytes):
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        name = [n for n in z.namelist() if n.endswith(".csv")][0]
+        with z.open(name) as f:
+            df = pd.read_csv(f, header=None)
+    # Binance kline kolonları: 0 open_time(ms) 1 open 2 high 3 low 4 close 5 volume 6 close_time ...
+    df = df.iloc[:, :6].copy()
+    df.columns = ["timestamp","open","high","low","close","volume"]
+    ts = pd.to_numeric(df["timestamp"], errors="coerce")
+    idx = pd.to_datetime(ts, unit="ms" if ts.max() > 1e12 else "s", utc=True)
+    df.index = idx
+    df = df[["open","high","low","close","volume"]].astype(float)
+    return df.sort_index()
 
 # =========================
 # Backtest Motoru
@@ -168,7 +225,7 @@ def backtest(
                 # kaldıraç tavanı
                 max_notional = equity * leverage
                 notional = qty * entry
-                if notional > max_notional and max_notional > 0:
+                if max_notional > 0 and notional > max_notional:
                     qty = max_notional / entry
                     notional = qty * entry
                 if qty <= 0:
@@ -201,7 +258,7 @@ def backtest(
                 qty = risk_usdt / stop_dist
                 max_notional = equity * leverage
                 notional = qty * entry
-                if notional > max_notional and max_notional > 0:
+                if max_notional > 0 and notional > max_notional:
                     qty = max_notional / entry
                     notional = qty * entry
                 if qty <= 0:
@@ -282,9 +339,18 @@ st.title("ETH 5m Scalper – Backtest (TSI D+W, EMA Pullback, Engulf, ATR×2, Ri
 
 with st.sidebar:
     st.header("Ayarlar")
-    data_source = st.selectbox("Veri kaynağı", ["API (ccxt)", "CSV yükle"], index=0)
-    exchange_name = st.selectbox("Borsa", ["binance"], index=0, disabled=(data_source=="CSV yükle"))
-    symbol = st.text_input("Sembol (Perp)", value="ETH/USDT", disabled=(data_source=="CSV yükle"))
+    data_source = st.selectbox(
+        "Veri kaynağı",
+        ["API (ccxt)", "CSV yükle", "Binance Arşiv (otomatik)"] ,
+        index=2
+    )
+    exchange_name = st.selectbox(
+        "Borsa",
+        ["binance", "binanceusdm", "bybit", "okx"],
+        index=0,
+        disabled=(data_source != "API (ccxt)")
+    )
+    symbol = st.text_input("Sembol (Perp)", value="ETH/USDT", disabled=(data_source != "API (ccxt)"))
     start_date = st.date_input("Başlangıç", value=(dt.date.today() - dt.timedelta(days=365)))
     end_date   = st.date_input("Bitiş", value=dt.date.today())
 
@@ -379,31 +445,87 @@ if run_btn:
         except Exception as e:
             st.error(f"CSV okunamadı: {e}")
             st.stop()
-    else:
+
+    elif data_source == "API (ccxt)":
         st.info("Veri indiriliyor… (ccxt)")
-        ex = getattr(ccxt, exchange_name)({"enableRateLimit": True})
-        ex.load_markets()
+        ex = getattr(ccxt, exchange_name)({"enableRateLimit": True, "timeout": 30000})
+        if exchange_name == "binanceusdm":
+            ex.options = {**getattr(ex, "options", {}), "defaultType": "future"}
+        # markets yükleme (retry)
+        for i in range(3):
+            try:
+                ex.load_markets()
+                break
+            except Exception as e:
+                if i == 2:
+                    st.error(f"Borsa market bilgisi alınamadı: {e}\nCSV veya Binance Arşiv seçeneklerini deneyebilirsin.")
+                    st.stop()
+                time.sleep(1.5 * (i+1))
+
         since_ms = int(pd.Timestamp(start_date, tz="UTC").timestamp() * 1000)
         df_5m_list = []
         fetch_since = since_ms
+        limit_per_call = 1000
+        max_calls = 60  # ~210 gün civarı (5m)
+        calls = 0
         while True:
-            df_chunk = fetch_ohlcv(ex, symbol, "5m", since_ms=fetch_since, limit=1500)
+            try:
+                df_chunk = fetch_ohlcv(ex, symbol, "5m", since_ms=fetch_since, limit=limit_per_call)
+            except Exception:
+                time.sleep(1.5)
+                df_chunk = fetch_ohlcv(ex, symbol, "5m", since_ms=fetch_since, limit=limit_per_call)
+
             if df_chunk.empty:
                 break
             df_5m_list.append(df_chunk)
             last_ts = int(df_chunk.index[-1].timestamp() * 1000)
             if df_chunk.index[-1].date() >= end_date:
                 break
+
             fetch_since = last_ts + 5 * 60 * 1000
-            if len(df_5m_list) > 200:  # ~3 yıl civarı
+            calls += 1
+            if calls >= max_calls:
                 break
+            time.sleep(0.4)  # rate-limit dostu bekleme
+
         if not df_5m_list:
             st.error("Veri alınamadı. Sembol veya tarih aralığını kontrol edin.")
             st.stop()
         df_5m = pd.concat(df_5m_list)
         df_5m = df_5m.loc[(df_5m.index.date >= start_date) & (df_5m.index.date <= end_date)]
 
-    st.success(f"5m bar sayısı: {len(df_5m)}")
+    elif data_source == "Binance Arşiv (otomatik)":
+        st.info("Binance arşivinden son 12 ay 5m ETHUSDT (USDT-M futures) verisi indiriliyor ve birleştiriliyor…")
+        months = list_last_n_months(12)
+        frames = []
+        for (y, m) in months:
+            url = monthly_url_futures_eth_5m(y, m)
+            st.write(f"- {y}-{m:02d} indiriliyor…")
+            zb = fetch_zip(url)
+            if zb is None:
+                st.write("  (yayınlanmamış/404, geçiliyor)")
+                continue
+            try:
+                dfm = parse_month_zip(zb)
+                frames.append(dfm)
+                time.sleep(0.4)
+            except Exception as e:
+                st.write(f"  (okunamadı: {e})")
+        if not frames:
+            st.error("Arşivden veri alınamadı.")
+            st.stop()
+        df_5m = pd.concat(frames)
+        # Tarih filtresi
+        df_5m = df_5m.loc[(df_5m.index.date >= start_date) & (df_5m.index.date <= end_date)]
+        if df_5m.empty:
+            st.error("Seçilen tarih aralığında arşivde veri yok.")
+            st.stop()
+
+    else:
+        st.error("Bilinmeyen veri kaynağı")
+        st.stop()
+
+    st.success(f"5m bar sayısı: {len(df_5m):,}")
 
     # Göstergeler
     df_5m = compute_indicators(df_5m, ema_fast=ema_fast, ema_mid=ema_mid, ema_slow=ema_slow, atr_len=atr_len)
@@ -491,9 +613,8 @@ if run_btn:
             tsiW = tsi_W["TSI"].reindex(df_5m.index, method="ffill")
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiD, name="TSI Daily", mode="lines"), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_5m.index, y=tsiW, name="TSI Weekly", mode="lines"), row=2, col=1)
-            # 0 hattı
-            fig.update_yaxes(title_text="", row=2, col=1)
-            fig.add_hline(y=0, line=dict(width=1, dash="dot"), row=2, col=1)
+            # 0 hattı (scatter ile)
+            fig.add_trace(go.Scatter(x=df_5m.index, y=[0]*len(df_5m), name="TSI 0", mode="lines", line=dict(dash="dot", width=1)), row=2, col=1)
 
         fig.update_layout(height=750, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
