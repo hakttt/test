@@ -15,7 +15,7 @@ import requests
 st.set_page_config(page_title="Binance Arşiv İndirici (BTC & ETH)", layout="wide")
 
 BINANCE_BASE = "https://data.binance.vision"
-INTERVALS_ALL = ["5m", "1h", "1w", "1M"]  # hedef TF'ler
+INTERVALS_ALL = ["5m", "1h", "1d", "1w", "1M"]  # hedef TF'ler (1d eklendi)
 
 MARKETS = {
     "USDT-M Futures": "data/futures/um/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{yyyy}-{mm}.zip",
